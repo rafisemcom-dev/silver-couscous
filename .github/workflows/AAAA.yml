@@ -1,0 +1,191 @@
+name: Advanced Remote Desktop Session (KDE - 6 Hours)
+
+on:
+  workflow_dispatch:
+    inputs:
+      crd_auth_code:
+        description: 'Google Headless CRD Auth Command'
+        required: true
+      crd_pin:
+        description: '6-digit PIN for CRD'
+        required: true
+        default: '123456'
+
+jobs:
+  start-desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Advanced Desktop Environment & Hebrew Support
+        run: |
+          sudo apt update
+          
+          # התקנת שולחן עבודה KDE, שרתי תצוגה וספריות תואמות ל-Ubuntu 24.04
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
+            kde-plasma-desktop kwin-x11 dbus-x11 xserver-xorg-video-dummy \
+            libgl1-mesa-dri libgl1 libglx-mesa0 libosmesa6 mesa-utils libgles2 \
+            x11-xkb-utils locales language-pack-he \
+            fonts-dejavu-core fonts-noto-core \
+            dolphin konsole kate curl wget
+
+          # הגדרת עברית במערכת
+          sudo locale-gen he_IL.UTF-8
+          sudo update-locale LANG=he_IL.UTF-8 LANGUAGE=he_IL:he LC_ALL=he_IL.UTF-8
+
+          # התקנת Chrome Remote Desktop
+          wget -q https://dl.google.com/linux/direct/chrome-remote-desktop_current_amd64.deb
+          sudo apt install -y ./chrome-remote-desktop_current_amd64.deb || sudo apt --fix-broken install -y
+          rm -f chrome-remote-desktop_current_amd64.deb
+
+          # התקנת Google Chrome
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt install -y ./google-chrome-stable_current_amd64.deb || sudo apt --fix-broken install -y
+          rm -f google-chrome-stable_current_amd64.deb
+
+          # אכיפת שפה עברית לכרום
+          sudo mkdir -p /etc/opt/chrome/policies/managed
+          echo '{"ApplicationLocaleValue": "he"}' | sudo tee /etc/opt/chrome/policies/managed/locale.json
+
+          # קובץ הפעלת הסשן
+          cat << 'EOF' > ~/.chrome-remote-desktop-session
+          export LANG=he_IL.UTF-8
+          export LANGUAGE=he_IL:he
+          export LC_ALL=he_IL.UTF-8
+          export DESKTOP_SESSION=plasma
+          export XDG_CURRENT_DESKTOP=KDE
+          setxkbmap -model pc105 -layout us,il -option grp:alt_shift_toggle &
+          exec startplasma-x11
+          EOF
+
+      - name: Configure User Password, Window Buttons & Hebrew Keyboard
+        run: |
+          echo "runner:123456" | sudo chpasswd
+
+          mkdir -p ~/.config
+          
+          # ביטול נעילת מסך
+          cat << 'EOF' > ~/.config/kscreenlockerrc
+          [Daemon]
+          Autolock=false
+          LockOnResume=false
+          Timeout=0
+          EOF
+
+          # הגדרת כפתורי חלון
+          cat << 'EOF' > ~/.config/kwinrc
+          [org.kde.kdecoration2]
+          ButtonsOnRight=IAX
+          ButtonsOnLeft=M
+          EOF
+
+          # פריסת מקלדת עברית
+          cat << 'EOF' > ~/.config/kxkbrc
+          [Layout]
+          DisplayNames=,
+          EnableSwitching=true
+          LayoutList=us,il
+          Options=grp:alt_shift_toggle
+          ResetOldOptions=true
+          SwitchMode=Global
+          Use=true
+          EOF
+
+      - name: Restore Chrome Profile from Repository
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/chrome_profile.tar.gz" ]; then
+            echo "Restoring Chrome profile..."
+            mkdir -p ~/.config/google-chrome
+            tar -xzf "$GITHUB_WORKSPACE/chrome_profile.tar.gz" -C ~/.config/google-chrome || true
+          fi
+
+      - name: Install Google Antigravity
+        run: |
+          sudo mkdir -p /opt/antigravity
+          curl -fsSL "https://storage.googleapis.com/antigravity-public/antigravity-hub/2.21.1-5614635819335680/linux-x64/Antigravity.tar.gz" | sudo tar -xz -C /opt/antigravity --strip-components=1
+          sudo ln -sf /opt/antigravity/antigravity /usr/local/bin/antigravity
+          
+          if [ -f /opt/antigravity/chrome-sandbox ]; then
+            sudo chown root:root /opt/antigravity/chrome-sandbox
+            sudo chmod 4755 /opt/antigravity/chrome-sandbox
+          fi
+
+      - name: Create Desktop Shortcuts (Antigravity & Chrome with WebGL)
+        run: |
+          mkdir -p /home/runner/Desktop
+
+          # יצירת קיצור דרך בשולחן העבודה ל-Antigravity עם תמיכת רינדור מובנית
+          cat << 'EOF' > /home/runner/Desktop/Antigravity.desktop
+          [Desktop Entry]
+          Version=1.0
+          Type=Application
+          Name=Google Antigravity
+          Comment=Antigravity Agent Platform
+          Exec=/opt/antigravity/antigravity --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-webgl --ignore-gpu-blocklist
+          Icon=utilities-terminal
+          Terminal=false
+          Categories=Development;
+          EOF
+
+          # קיצור דרך לכרום עם דגלי רינדור תוכנתי למניעת שגיאות WebGL2
+          cat << 'EOF' > /home/runner/Desktop/Google-Chrome.desktop
+          [Desktop Entry]
+          Version=1.0
+          Type=Application
+          Name=Google Chrome
+          Exec=/usr/bin/google-chrome-stable --no-sandbox --use-gl=angle --use-angle=swiftshader --enable-webgl --ignore-gpu-blocklist %U
+          Icon=google-chrome
+          Terminal=false
+          Categories=Network;WebBrowser;
+          EOF
+
+          chmod +x /home/runner/Desktop/*.desktop
+          sudo cp /home/runner/Desktop/*.desktop /usr/share/applications/
+
+      - name: Register and Start Chrome Remote Desktop
+        run: |
+          RUN_TIME=$(TZ="Asia/Jerusalem" date +"%H-%M")
+          CUSTOM_NAME="GitHub-Server-$RUN_TIME"
+          sudo hostnamectl set-hostname "$CUSTOM_NAME"
+
+          RAW_CMD="${{ github.event.inputs.crd_auth_code }}"
+
+          if [[ "$RAW_CMD" =~ --code= ]] || [[ "$RAW_CMD" =~ start-host ]]; then
+            CMD=$(echo "$RAW_CMD" | sed -E "s/--name=[^ ]+/--name=$CUSTOM_NAME/")
+            eval "$CMD --pin=${{ github.event.inputs.crd_pin }}"
+          else
+            /opt/google/chrome-remote-desktop/start-host \
+              --code="$RAW_CMD" \
+              --redirect-url="https://remotedesktop.google.com/_/oauthredirect" \
+              --name="$CUSTOM_NAME" \
+              --pin="${{ github.event.inputs.crd_pin }}"
+          fi
+
+      - name: Keep Alive for 6 Hours
+        run: |
+          echo "Session running. Active for 6 hours..."
+          sleep 21600
+
+      - name: Save Chrome Profile to Repository
+        if: always()
+        run: |
+          pkill -x chrome || pkill -x google-chrome || true
+          sleep 3
+
+          if [ -d "$HOME/.config/google-chrome" ]; then
+            tar --exclude='Default/Cache' \
+                --exclude='Default/Code Cache' \
+                --exclude='Default/GPUCache' \
+                --exclude='GrShaderCache' \
+                --exclude='ShaderCache' \
+                -czf "$GITHUB_WORKSPACE/chrome_profile.tar.gz" -C "$HOME/.config/google-chrome" . || true
+
+            cd "$GITHUB_WORKSPACE"
+            git config --global user.name "github-actions[bot]"
+            git config --global user.email "github-actions[bot]@users.noreply.github.com"
+            git add chrome_profile.tar.gz
+            git diff --staged --quiet || (git commit -m "Auto-save Chrome profile [skip ci]" && git push)
+          fi
